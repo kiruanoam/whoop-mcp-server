@@ -314,7 +314,11 @@ function createMcpServer(): Server {
 						if (w.avg_hr !== null) response += `- **Avg / Max HR**: ${w.avg_hr} / ${w.max_hr ?? 'N/A'} bpm\n`;
 						if (w.distance_meter) response += `- **Distance**: ${(w.distance_meter / 1000).toFixed(2)} km\n`;
 						if (w.altitude_gain_meter) response += `- **Altitude gain**: ${Math.round(w.altitude_gain_meter)} m\n`;
-						if (w.percent_recorded !== null) response += `- **HR recorded**: ${Math.round(w.percent_recorded)}%\n`;
+						if (w.percent_recorded !== null) {
+							// WHOOP returns a 0-1 fraction (1 = 100%)
+							const pct = w.percent_recorded <= 1 ? w.percent_recorded * 100 : w.percent_recorded;
+							response += `- **HR recorded**: ${Math.round(pct)}%\n`;
+						}
 						const zones = [w.zone_zero_milli, w.zone_one_milli, w.zone_two_milli, w.zone_three_milli, w.zone_four_milli, w.zone_five_milli];
 						if (zones.some(z => z !== null)) {
 							response += `- **HR zones**: ${zones.map((z, i) => `${zoneLabels[i]} ${z ? formatDuration(z) : "0m"}`).join(', ')}\n`;
