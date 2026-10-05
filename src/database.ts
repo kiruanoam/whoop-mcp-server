@@ -150,6 +150,22 @@ export class WhoopDatabase {
 
 			INSERT OR IGNORE INTO sync_state (id) VALUES (1);
 		`);
+
+		// Migration: extra workout columns from the WHOOP v2 API.
+		const workoutColumns = new Set(
+			(this.db.prepare('PRAGMA table_info(workouts)').all() as Array<{ name: string }>).map(c => c.name)
+		);
+		const extraColumns: Array<[string, string]> = [
+			['sport_name', 'TEXT'],
+			['percent_recorded', 'REAL'],
+			['distance_meter', 'REAL'],
+			['altitude_gain_meter', 'REAL'],
+		];
+		for (const [name, type] of extraColumns) {
+			if (!workoutColumns.has(name)) {
+				this.db.exec(`ALTER TABLE workouts ADD COLUMN ${name} ${type}`);
+			}
+		}
 	}
 
 	saveTokens(tokens: WhoopTokens): void {
@@ -298,19 +314,21 @@ export class WhoopDatabase {
 	upsertWorkouts(workouts: WhoopWorkout[]): void {
 		const stmt = this.db.prepare(`
 			INSERT OR REPLACE INTO workouts (
-				id, user_id, sport_id, start_time, end_time, score_state,
-				strain, avg_hr, max_hr, kilojoule,
+				id, user_id, sport_id, sport_name, start_time, end_time, score_state,
+				strain, avg_hr, max_hr, kilojoule, percent_recorded, distance_meter, altitude_gain_meter,
 				zone_zero_milli, zone_one_milli, zone_two_milli, zone_three_milli, zone_four_milli, zone_five_milli,
 				synced_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		`);
 
 		const insertMany = this.db.transaction((items: WhoopWorkout[]) => {
 			for (const w of items) {
+				const zones = w.score?.zone_durations ?? w.score?.zone_duration;
 				stmt.run(
 					w.id,
 					w.user_id,
-					w.sport_id,
+					w.sport_id ?? -1,
+					w.sport_name ?? null,
 					w.start,
 					w.end,
 					w.score_state,
@@ -318,12 +336,15 @@ export class WhoopDatabase {
 					w.score?.average_heart_rate ?? null,
 					w.score?.max_heart_rate ?? null,
 					w.score?.kilojoule ?? null,
-					w.score?.zone_duration?.zone_zero_milli ?? null,
-					w.score?.zone_duration?.zone_one_milli ?? null,
-					w.score?.zone_duration?.zone_two_milli ?? null,
-					w.score?.zone_duration?.zone_three_milli ?? null,
-					w.score?.zone_duration?.zone_four_milli ?? null,
-					w.score?.zone_duration?.zone_five_milli ?? null
+					w.score?.percent_recorded ?? null,
+					w.score?.distance_meter ?? null,
+					w.score?.altitude_gain_meter ?? null,
+					zones?.zone_zero_milli ?? null,
+					zones?.zone_one_milli ?? null,
+					zones?.zone_two_milli ?? null,
+					zones?.zone_three_milli ?? null,
+					zones?.zone_four_milli ?? null,
+					zones?.zone_five_milli ?? null
 				);
 			}
 		});
@@ -366,6 +387,14 @@ export class WhoopDatabase {
 		return this.db.prepare(`
 			SELECT * FROM workouts WHERE start_time >= ? AND start_time <= ? ORDER BY start_time DESC
 		`).all(startDate, endDate) as DbWorkout[];
+	}
+
+	getWorkouts(days: number): DbWorkout[] {
+		return this.db.prepare(`
+			SELECT * FROM workouts
+			WHERE start_time >= DATE('now', '-' || ? || ' days')
+			ORDER BY start_time DESC
+		`).all(days) as DbWorkout[];
 	}
 
 	getRecoveryTrends(days: number): RecoveryTrendRow[] {
