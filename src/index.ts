@@ -133,6 +133,15 @@ function createMcpServer(): Server {
 				},
 			},
 			{
+				name: 'get_workouts',
+				description: 'Get workout history: sport, date, duration, strain, calories, heart rate, distance and time in each heart rate zone.',
+				inputSchema: {
+					type: 'object',
+					properties: { days: { type: 'number', description: 'Number of days to analyze (default: 14, max: 90)' } },
+					required: [],
+				},
+			},
+			{
 				name: 'sync_data',
 				description: 'Manually trigger a data sync from Whoop.',
 				inputSchema: {
@@ -154,7 +163,7 @@ function createMcpServer(): Server {
 		const typedArgs = (args ?? {}) as ToolArguments;
 
 		try {
-			const dataTools = ['get_today', 'get_recovery_trends', 'get_sleep_analysis', 'get_strain_history'];
+			const dataTools = ['get_today', 'get_recovery_trends', 'get_sleep_analysis', 'get_strain_history', 'get_workouts'];
 			if (dataTools.includes(name)) {
 				const tokens = db.getTokens();
 				if (!tokens) {
@@ -278,6 +287,40 @@ function createMcpServer(): Server {
 					const avgCalories = trends.reduce((sum, d) => sum + (d.calories || 0), 0) / trends.length;
 
 					response += `\n## Averages\n- **Daily Strain**: ${avgStrain.toFixed(1)}\n- **Daily Calories**: ${Math.round(avgCalories)} kcal\n`;
+
+					return { content: [{ type: 'text', text: response }] };
+				}
+
+				case 'get_workouts': {
+					const days = validateDays(typedArgs.days);
+					const workouts = db.getWorkouts(days);
+
+					if (workouts.length === 0) {
+						return { content: [{ type: 'text', text: 'No workouts recorded for the requested period.' }] };
+					}
+
+					const zoneLabels = ['Z0', 'Z1', 'Z2', 'Z3', 'Z4', 'Z5'];
+					let response = `# Workouts (Last ${days} Days): ${workouts.length} sessions\n\n`;
+
+					for (const w of workouts) {
+						const durationMs = new Date(w.end_time).getTime() - new Date(w.start_time).getTime();
+						const sport = w.sport_name ?? `sport ${w.sport_id}`;
+						response += `## ${formatDate(w.start_time)}: ${sport}\n`;
+						response += `- **Start**: ${w.start_time}\n`;
+						response += `- **Duration**: ${formatDuration(durationMs)}\n`;
+						if (w.score_state !== 'SCORED') response += `- **Score state**: ${w.score_state}\n`;
+						if (w.strain !== null) response += `- **Strain**: ${w.strain.toFixed(1)}\n`;
+						if (w.kilojoule !== null) response += `- **Calories**: ${Math.round(w.kilojoule / 4.184)} kcal\n`;
+						if (w.avg_hr !== null) response += `- **Avg / Max HR**: ${w.avg_hr} / ${w.max_hr ?? 'N/A'} bpm\n`;
+						if (w.distance_meter) response += `- **Distance**: ${(w.distance_meter / 1000).toFixed(2)} km\n`;
+						if (w.altitude_gain_meter) response += `- **Altitude gain**: ${Math.round(w.altitude_gain_meter)} m\n`;
+						if (w.percent_recorded !== null) response += `- **HR recorded**: ${Math.round(w.percent_recorded)}%\n`;
+						const zones = [w.zone_zero_milli, w.zone_one_milli, w.zone_two_milli, w.zone_three_milli, w.zone_four_milli, w.zone_five_milli];
+						if (zones.some(z => z !== null)) {
+							response += `- **HR zones**: ${zones.map((z, i) => `${zoneLabels[i]} ${z ? formatDuration(z) : "0m"}`).join(', ')}\n`;
+						}
+						response += '\n';
+					}
 
 					return { content: [{ type: 'text', text: response }] };
 				}

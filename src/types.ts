@@ -91,7 +91,8 @@ export interface WhoopWorkout {
 	start: string;
 	end: string;
 	timezone_offset: string;
-	sport_id: number;
+	sport_id?: number;
+	sport_name?: string;
 	score_state: 'SCORED' | 'PENDING_SCORE' | 'UNSCORABLE';
 	score?: {
 		strain: number;
@@ -99,15 +100,21 @@ export interface WhoopWorkout {
 		max_heart_rate: number;
 		kilojoule: number;
 		percent_recorded: number;
-		zone_duration: {
-			zone_zero_milli: number;
-			zone_one_milli: number;
-			zone_two_milli: number;
-			zone_three_milli: number;
-			zone_four_milli: number;
-			zone_five_milli: number;
-		};
+		distance_meter?: number;
+		altitude_gain_meter?: number;
+		altitude_change_meter?: number;
+		zone_durations?: WhoopZoneDurations;
+		zone_duration?: WhoopZoneDurations;
 	};
+}
+
+export interface WhoopZoneDurations {
+	zone_zero_milli: number;
+	zone_one_milli: number;
+	zone_two_milli: number;
+	zone_three_milli: number;
+	zone_four_milli: number;
+	zone_five_milli: number;
 }
 
 export interface WhoopPaginatedResponse<T> {
@@ -169,6 +176,7 @@ export interface DbWorkout {
 	id: string;
 	user_id: number;
 	sport_id: number;
+	sport_name: string | null;
 	start_time: string;
 	end_time: string;
 	score_state: string;
@@ -176,6 +184,9 @@ export interface DbWorkout {
 	avg_hr: number | null;
 	max_hr: number | null;
 	kilojoule: number | null;
+	percent_recorded: number | null;
+	distance_meter: number | null;
+	altitude_gain_meter: number | null;
 	zone_zero_milli: number | null;
 	zone_one_milli: number | null;
 	zone_two_milli: number | null;
