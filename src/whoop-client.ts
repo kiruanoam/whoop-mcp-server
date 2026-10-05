@@ -44,13 +44,13 @@ export class WhoopClient {
 		this.tokens = tokens;
 	}
 
-	getAuthorizationUrl(scopes: string[]): string {
+	getAuthorizationUrl(scopes: string[], state: string): string {
 		const params = new URLSearchParams({
 			client_id: this.clientId,
 			redirect_uri: this.redirectUri,
 			response_type: 'code',
 			scope: scopes.join(' '),
-			state: crypto.randomUUID(),
+			state,
 		});
 		return `${WHOOP_AUTH_BASE}/auth?${params}`;
 	}
@@ -83,7 +83,20 @@ export class WhoopClient {
 		return tokens;
 	}
 
-	private async refreshTokens(): Promise<void> {
+	private refreshInFlight: Promise<void> | null = null;
+
+	// WHOOP rotates refresh tokens: two parallel refreshes with the same token make the
+	// second one fail. All callers share a single in-flight refresh.
+	private refreshTokens(): Promise<void> {
+		if (!this.refreshInFlight) {
+			this.refreshInFlight = this.doRefreshTokens().finally(() => {
+				this.refreshInFlight = null;
+			});
+		}
+		return this.refreshInFlight;
+	}
+
+	private async doRefreshTokens(): Promise<void> {
 		if (!this.tokens?.refresh_token) {
 			throw new Error('No refresh token available');
 		}
@@ -103,10 +116,10 @@ export class WhoopClient {
 			throw new Error(`Token refresh failed: ${await response.text()}`);
 		}
 
-		const data = await response.json() as { access_token: string; refresh_token: string; expires_in: number };
+		const data = await response.json() as { access_token: string; refresh_token?: string; expires_in: number };
 		this.tokens = {
 			access_token: data.access_token,
-			refresh_token: data.refresh_token,
+			refresh_token: data.refresh_token ?? this.tokens.refresh_token,
 			expires_at: Date.now() + data.expires_in * 1000,
 		};
 
@@ -129,15 +142,35 @@ export class WhoopClient {
 			}
 		}
 
-		const response = await fetch(url.toString(), {
-			headers: { Authorization: `Bearer ${this.tokens.access_token}` },
-		});
+		let refreshedAfter401 = false;
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const response = await fetch(url.toString(), {
+				headers: { Authorization: `Bearer ${this.tokens!.access_token}` },
+			});
 
-		if (!response.ok) {
-			throw new Error(`API request failed: ${response.status} ${await response.text()}`);
+			// Access token revoked or expired early: refresh once and retry.
+			if (response.status === 401 && !refreshedAfter401) {
+				refreshedAfter401 = true;
+				await this.refreshTokens();
+				continue;
+			}
+
+			// Rate limited (100 requests/minute): wait and retry.
+			if (response.status === 429 && attempt < 3) {
+				const retryAfter = Number.parseInt(response.headers.get('retry-after') ?? '', 10);
+				const waitMs = Number.isFinite(retryAfter) ? retryAfter * 1000 : 2000 * (attempt + 1);
+				await new Promise(resolve => setTimeout(resolve, Math.min(waitMs, 30_000)));
+				continue;
+			}
+
+			if (!response.ok) {
+				throw new Error(`API request failed: ${response.status} ${await response.text()}`);
+			}
+
+			return response.json() as Promise<T>;
 		}
 
-		return response.json() as Promise<T>;
+		throw new Error('API request failed after retries');
 	}
 
 	async getProfile(): Promise<WhoopUser> {

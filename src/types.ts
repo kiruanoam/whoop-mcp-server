@@ -51,6 +51,7 @@ export interface WhoopRecovery {
 
 export interface WhoopSleep {
 	id: string;
+	cycle_id?: number;
 	user_id: number;
 	created_at: string;
 	updated_at: string;
@@ -127,6 +128,7 @@ export interface DbCycle {
 	user_id: number;
 	start_time: string;
 	end_time: string | null;
+	timezone_offset: string | null;
 	score_state: string;
 	strain: number | null;
 	kilojoule: number | null;
@@ -155,6 +157,7 @@ export interface DbSleep {
 	cycle_id: number | null;
 	start_time: string;
 	end_time: string;
+	timezone_offset: string | null;
 	is_nap: number;
 	score_state: string;
 	total_in_bed_milli: number | null;
@@ -179,6 +182,7 @@ export interface DbWorkout {
 	sport_name: string | null;
 	start_time: string;
 	end_time: string;
+	timezone_offset: string | null;
 	score_state: string;
 	strain: number | null;
 	avg_hr: number | null;

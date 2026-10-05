@@ -55,8 +55,16 @@ export class WhoopSync {
 		};
 	}
 
+	// Re-syncs from a couple of days before the newest synced date, so that a long
+	// gap without any call (more than a week) does not leave missing days.
 	async quickSync(): Promise<SyncStats> {
-		return this.syncDays(7);
+		const state = this.db.getSyncState();
+		let days = 7;
+		if (state.newestDate) {
+			const sinceNewest = Math.ceil((Date.now() - new Date(state.newestDate).getTime()) / 86_400_000);
+			days = Math.max(days, sinceNewest + 2);
+		}
+		return this.syncDays(Math.min(days, 90));
 	}
 
 	needsFullSync(): boolean {
