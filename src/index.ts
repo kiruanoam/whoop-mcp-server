@@ -36,7 +36,7 @@ if (existingTokens) {
 
 const sync = new WhoopSync(client, db);
 
-const SESSION_TTL_MS = 30 * 60 * 1000;
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const transports = new Map<string, { transport: StreamableHTTPServerTransport; lastAccess: number }>();
 
 function cleanupStaleSessions(): void {
@@ -383,6 +383,22 @@ async function main(): Promise<void> {
 					session.lastAccess = Date.now();
 					transport = session.transport;
 				} else {
+					const body = req.body as { method?: string } | Array<{ method?: string }> | undefined;
+					const isInitialize = Array.isArray(body)
+						? body.some(msg => msg?.method === 'initialize')
+						: body?.method === 'initialize';
+
+					// Unknown or expired session (e.g. after a redeploy): answer 404 so the
+					// client starts a fresh session instead of failing with "Server not initialized".
+					if (!isInitialize) {
+						res.status(404).json({
+							jsonrpc: '2.0',
+							error: { code: -32001, message: 'Session not found, please reinitialize' },
+							id: null,
+						});
+						return;
+					}
+
 					transport = new StreamableHTTPServerTransport({
 						sessionIdGenerator: () => crypto.randomUUID(),
 						onsessioninitialized: newSessionId => {
