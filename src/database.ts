@@ -37,6 +37,8 @@ interface RecoveryTrendRow {
 interface SleepTrendRow {
 	date: string;
 	total_sleep_hours: number;
+	deep_hours: number | null;
+	rem_hours: number | null;
 	performance: number;
 	efficiency: number;
 }
@@ -148,24 +150,49 @@ export class WhoopDatabase {
 			CREATE INDEX IF NOT EXISTS idx_sleep_start ON sleep(start_time);
 			CREATE INDEX IF NOT EXISTS idx_workouts_start ON workouts(start_time);
 
+			CREATE TABLE IF NOT EXISTS oauth_states (
+				state TEXT PRIMARY KEY,
+				created_at INTEGER NOT NULL
+			);
+
 			INSERT OR IGNORE INTO sync_state (id) VALUES (1);
 		`);
 
-		// Migration: extra workout columns from the WHOOP v2 API.
-		const workoutColumns = new Set(
-			(this.db.prepare('PRAGMA table_info(workouts)').all() as Array<{ name: string }>).map(c => c.name)
-		);
-		const extraColumns: Array<[string, string]> = [
+		// Migrations: columns added after the first release, created on existing databases.
+		this.addMissingColumns('workouts', [
 			['sport_name', 'TEXT'],
 			['percent_recorded', 'REAL'],
 			['distance_meter', 'REAL'],
 			['altitude_gain_meter', 'REAL'],
-		];
-		for (const [name, type] of extraColumns) {
-			if (!workoutColumns.has(name)) {
-				this.db.exec(`ALTER TABLE workouts ADD COLUMN ${name} ${type}`);
+			['timezone_offset', 'TEXT'],
+		]);
+		this.addMissingColumns('sleep', [['timezone_offset', 'TEXT']]);
+		this.addMissingColumns('cycles', [['timezone_offset', 'TEXT']]);
+	}
+
+	private addMissingColumns(table: string, columns: Array<[string, string]>): void {
+		const existing = new Set(
+			(this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(c => c.name)
+		);
+		for (const [name, type] of columns) {
+			if (!existing.has(name)) {
+				this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`);
 			}
 		}
+	}
+
+	// OAuth state: generated with each authorization link and checked on the callback,
+	// so a callback that did not start from our own link is refused (CSRF protection).
+	saveOAuthState(state: string): void {
+		const cutoff = Date.now() - 30 * 60 * 1000;
+		this.db.prepare('DELETE FROM oauth_states WHERE created_at < ?').run(cutoff);
+		this.db.prepare('INSERT OR REPLACE INTO oauth_states (state, created_at) VALUES (?, ?)').run(state, Date.now());
+	}
+
+	consumeOAuthState(state: string): boolean {
+		const cutoff = Date.now() - 30 * 60 * 1000;
+		const result = this.db.prepare('DELETE FROM oauth_states WHERE state = ? AND created_at >= ?').run(state, cutoff);
+		return result.changes > 0;
 	}
 
 	saveTokens(tokens: WhoopTokens): void {
@@ -224,8 +251,8 @@ export class WhoopDatabase {
 
 	upsertCycles(cycles: WhoopCycle[]): void {
 		const stmt = this.db.prepare(`
-			INSERT OR REPLACE INTO cycles (id, user_id, start_time, end_time, score_state, strain, kilojoule, avg_hr, max_hr, synced_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			INSERT OR REPLACE INTO cycles (id, user_id, start_time, end_time, timezone_offset, score_state, strain, kilojoule, avg_hr, max_hr, synced_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		`);
 
 		const insertMany = this.db.transaction((items: WhoopCycle[]) => {
@@ -235,6 +262,7 @@ export class WhoopDatabase {
 					c.user_id,
 					c.start,
 					c.end,
+					c.timezone_offset ?? null,
 					c.score_state,
 					c.score?.strain ?? null,
 					c.score?.kilojoule ?? null,
@@ -276,11 +304,11 @@ export class WhoopDatabase {
 	upsertSleeps(sleeps: WhoopSleep[]): void {
 		const stmt = this.db.prepare(`
 			INSERT OR REPLACE INTO sleep (
-				id, user_id, start_time, end_time, is_nap, score_state,
+				id, user_id, cycle_id, start_time, end_time, timezone_offset, is_nap, score_state,
 				total_in_bed_milli, total_awake_milli, total_light_milli, total_deep_milli, total_rem_milli,
 				sleep_performance, sleep_efficiency, sleep_consistency, respiratory_rate,
 				sleep_needed_baseline_milli, sleep_needed_debt_milli, sleep_needed_strain_milli, synced_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		`);
 
 		const insertMany = this.db.transaction((items: WhoopSleep[]) => {
@@ -288,8 +316,10 @@ export class WhoopDatabase {
 				stmt.run(
 					s.id,
 					s.user_id,
+					s.cycle_id ?? null,
 					s.start,
 					s.end,
+					s.timezone_offset ?? null,
 					s.nap ? 1 : 0,
 					s.score_state,
 					s.score?.stage_summary?.total_in_bed_time_milli ?? null,
@@ -314,11 +344,11 @@ export class WhoopDatabase {
 	upsertWorkouts(workouts: WhoopWorkout[]): void {
 		const stmt = this.db.prepare(`
 			INSERT OR REPLACE INTO workouts (
-				id, user_id, sport_id, sport_name, start_time, end_time, score_state,
+				id, user_id, sport_id, sport_name, start_time, end_time, timezone_offset, score_state,
 				strain, avg_hr, max_hr, kilojoule, percent_recorded, distance_meter, altitude_gain_meter,
 				zone_zero_milli, zone_one_milli, zone_two_milli, zone_three_milli, zone_four_milli, zone_five_milli,
 				synced_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		`);
 
 		const insertMany = this.db.transaction((items: WhoopWorkout[]) => {
@@ -331,6 +361,7 @@ export class WhoopDatabase {
 					w.sport_name ?? null,
 					w.start,
 					w.end,
+					w.timezone_offset ?? null,
 					w.score_state,
 					w.score?.strain ?? null,
 					w.score?.average_heart_rate ?? null,
@@ -389,41 +420,46 @@ export class WhoopDatabase {
 		`).all(startDate, endDate) as DbWorkout[];
 	}
 
+	// Cutoff computed in JS (ISO string), compared against stored ISO timestamps.
+	private cutoff(days: number): string {
+		return new Date(Date.now() - days * 86_400_000).toISOString();
+	}
+
 	getWorkouts(days: number): DbWorkout[] {
 		return this.db.prepare(`
-			SELECT * FROM workouts
-			WHERE start_time >= DATE('now', '-' || ? || ' days')
-			ORDER BY start_time DESC
-		`).all(days) as DbWorkout[];
+			SELECT * FROM workouts WHERE start_time >= ? ORDER BY start_time DESC
+		`).all(this.cutoff(days)) as DbWorkout[];
 	}
 
 	getRecoveryTrends(days: number): RecoveryTrendRow[] {
 		return this.db.prepare(`
-			SELECT DATE(created_at) as date, recovery_score, hrv_rmssd as hrv, resting_hr as rhr
+			SELECT created_at as date, recovery_score, hrv_rmssd as hrv, resting_hr as rhr
 			FROM recovery
-			WHERE recovery_score IS NOT NULL AND created_at >= DATE('now', '-' || ? || ' days')
+			WHERE recovery_score IS NOT NULL AND created_at >= ?
 			ORDER BY created_at DESC
-		`).all(days) as RecoveryTrendRow[];
+		`).all(this.cutoff(days)) as RecoveryTrendRow[];
 	}
 
 	getSleepTrends(days: number): SleepTrendRow[] {
 		return this.db.prepare(`
-			SELECT DATE(start_time) as date,
-				ROUND((total_in_bed_milli - total_awake_milli) / 3600000.0, 2) as total_sleep_hours,
+			SELECT end_time as date,
+				ROUND((COALESCE(total_light_milli, 0) + COALESCE(total_deep_milli, 0) + COALESCE(total_rem_milli, 0)) / 3600000.0, 2) as total_sleep_hours,
+				ROUND(total_deep_milli / 3600000.0, 2) as deep_hours,
+				ROUND(total_rem_milli / 3600000.0, 2) as rem_hours,
 				sleep_performance as performance, sleep_efficiency as efficiency
 			FROM sleep
-			WHERE is_nap = 0 AND sleep_performance IS NOT NULL AND start_time >= DATE('now', '-' || ? || ' days')
+			WHERE is_nap = 0 AND sleep_performance IS NOT NULL AND start_time >= ?
 			ORDER BY start_time DESC
-		`).all(days) as SleepTrendRow[];
+		`).all(this.cutoff(days)) as SleepTrendRow[];
 	}
 
 	getStrainTrends(days: number): StrainTrendRow[] {
 		return this.db.prepare(`
-			SELECT DATE(start_time) as date, strain, ROUND(kilojoule / 4.184, 0) as calories
+			SELECT start_time as date, strain, ROUND(kilojoule / 4.184, 0) as calories
 			FROM cycles
-			WHERE strain IS NOT NULL AND start_time >= DATE('now', '-' || ? || ' days')
+			WHERE strain IS NOT NULL AND start_time >= ?
 			ORDER BY start_time DESC
-		`).all(days) as StrainTrendRow[];
+		`).all(this.cutoff(days)) as StrainTrendRow[];
 	}
 
 	close(): void {

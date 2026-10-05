@@ -89,6 +89,9 @@ npm run dev
 | `DB_PATH` | SQLite database path | `./whoop.db` |
 | `PORT` | HTTP server port | `3000` |
 | `MCP_MODE` | `http` for remote, `stdio` for local | `http` |
+| `ENCRYPTION_SECRET` | Key used to encrypt stored WHOOP tokens | Falls back to `WHOOP_CLIENT_SECRET` |
+| `MCP_ACCESS_KEY` | Secret path segment. When set, the MCP endpoint is only served at `/mcp/<MCP_ACCESS_KEY>` and `/mcp` returns 404. Strongly recommended: without it anyone who knows the URL can read your health data. | Not set (open `/mcp`) |
+| `WHOOP_TIMEZONE` | IANA time zone used to label days | `Europe/Paris` |
 
 ## Architecture
 
